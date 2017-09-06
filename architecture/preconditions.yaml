@@ -1,0 +1,210 @@
+---
+
+  #====================================================================================================
+  # AWS CloudFormation template for meeting the following preconditions:
+  #      Precondition 1: Config must be running in the region where this template will be run. This is needed for Config Rules.
+  #      Precondition 2: CloudTrail must be delivering logs to CloudWatch Logs. This is needed for CloudWatch metrics and alarms.
+  #====================================================================================================
+
+  AWSTemplateFormatVersion: 2010-09-09
+  Description: Creates CloudTrail and Config resources to satisfy preconditions for create-benchmark-rules.yaml.
+
+  #==================================================
+  # Resources
+  #==================================================
+  Resources:
+
+    LogsS3BucketAccessLogsBucket:
+      Type: 'AWS::S3::Bucket'
+      Properties:
+        AccessControl: LogDeliveryWrite
+        LifecycleConfiguration:
+          Rules:
+            - Status: Enabled
+              Transitions:
+                - StorageClass: STANDARD_IA
+                  TransitionInDays: 30
+              NoncurrentVersionTransitions:
+                - StorageClass: STANDARD_IA
+                  TransitionInDays: 30
+        VersioningConfiguration:
+          Status: Enabled
+
+    LogsS3Bucket:
+      Type: 'AWS::S3::Bucket'
+      Properties:
+        AccessControl: Private
+        LifecycleConfiguration:
+          Rules:
+            - Status: Enabled
+              Transitions:
+                - StorageClass: STANDARD_IA
+                  TransitionInDays: 30
+              NoncurrentVersionTransitions:
+                - StorageClass: STANDARD_IA
+                  TransitionInDays: 30
+        LoggingConfiguration:
+          DestinationBucketName: !Ref LogsS3BucketAccessLogsBucket
+        VersioningConfiguration:
+          Status: Enabled
+
+    #==================================================
+    # Resources for Precondition 1 (Config)
+    #==================================================
+    ConfigurationRecorderRole:
+      Type: 'AWS::IAM::Role'
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                  - config.amazonaws.com
+              Action:
+                - 'sts:AssumeRole'
+        ManagedPolicyArns:
+          - 'arn:aws:iam::aws:policy/service-role/AWSConfigRole'
+        Path: /
+        Policies:
+          - PolicyName: S3AccessForConfigurationRecorderRolePolicy
+            PolicyDocument:
+              Version: 2012-10-17
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - 's3:PutObject'
+                  Resource:
+                    - !Join [ '', [ !GetAtt LogsS3Bucket.Arn, '/AWSLogs/', !Ref 'AWS::AccountId', '/*' ] ]
+                  Condition:
+                    StringEquals:
+                      s3:x-amz-acl: bucket-owner-full-control
+                - Effect: Allow
+                  Action:
+                    - 's3:GetBucketAcl'
+                  Resource:
+                    - !GetAtt LogsS3Bucket.Arn
+
+    ConfigurationRecorder:
+      Type: 'AWS::Config::ConfigurationRecorder'
+      Properties:
+        RecordingGroup:
+          AllSupported: true
+          IncludeGlobalResourceTypes: true
+        RoleARN: !GetAtt ConfigurationRecorderRole.Arn
+
+    DeliveryChannel:
+      Type: 'AWS::Config::DeliveryChannel'
+      Properties:
+        ConfigSnapshotDeliveryProperties:
+          DeliveryFrequency: Twelve_Hours
+        S3BucketName: !Ref LogsS3Bucket
+
+    #==================================================
+    # Resources for Precondition 2 (CloudTrail)
+    #==================================================
+    CloudTrailKmsKey:
+      Type: 'AWS::KMS::Key'
+      Properties:
+        Description: Key used when encrypting CloudTrail logs stored in S3.
+        Enabled: true
+        EnableKeyRotation: true
+        KeyPolicy:
+          Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Principal:
+                AWS:
+                  - !Sub arn:aws:iam::${AWS::AccountId}:root
+              Action:
+                - 'kms:*'
+              Resource:
+              - '*'
+            - Effect: Allow
+              Principal:
+                Service:
+                  - cloudtrail.amazonaws.com
+              Action:
+                - 'kms:Encrypt'
+                - 'kms:ReEncrypt*'
+                - 'kms:GenerateDataKey'
+                - 'kms:DescribeKey'
+                - 'kms:Decrypt'
+              Resource:
+                - '*'
+
+    CloudTrailKmsKeyAlias:
+      Type: 'AWS::KMS::Alias'
+      Properties:
+        AliasName: alias/s3/logs
+        TargetKeyId: !GetAtt CloudTrailKmsKey.Arn
+
+    LogsS3BucketPolicy:
+      Type: 'AWS::S3::BucketPolicy'
+      Properties:
+        Bucket: !Ref LogsS3Bucket
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - 's3:PutObject'
+              Principal:
+                Service:
+                  - cloudtrail.amazonaws.com
+              Resource:
+                - !Join [ '', [ !GetAtt LogsS3Bucket.Arn, '/AWSLogs/', !Ref 'AWS::AccountId', '/*' ] ]
+              Condition:
+                StringEquals:
+                  s3:x-amz-acl: bucket-owner-full-control
+            - Effect: Allow
+              Action:
+                - 's3:GetBucketAcl'
+              Principal:
+                Service:
+                  - cloudtrail.amazonaws.com
+              Resource:
+                - !GetAtt LogsS3Bucket.Arn
+
+    CloudTrailLogGroup:
+      Type: 'AWS::Logs::LogGroup'
+      Properties:
+        RetentionInDays: 90
+
+    CloudTrailRole:
+      Type: 'AWS::IAM::Role'
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                  - cloudtrail.amazonaws.com
+                  - cloudtrail.preprod.amazonaws.com
+              Action:
+                - 'sts:AssumeRole'
+        Path: /
+        Policies:
+          - PolicyName: LogGroupAccessForCloudTrailRolePolicy
+            PolicyDocument:
+              Version: 2012-10-17
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - 'logs:CreateLogStream'
+                    - 'logs:PutLogEvents'
+                  Resource:
+                    - !Join [ '', [ !GetAtt CloudTrailLogGroup.Arn, '*' ] ]
+
+    CloudTrail:
+      Type: 'AWS::CloudTrail::Trail'
+      Properties:
+        CloudWatchLogsLogGroupArn: !GetAtt CloudTrailLogGroup.Arn
+        CloudWatchLogsRoleArn: !GetAtt CloudTrailRole.Arn
+        EnableLogFileValidation: true
+        IncludeGlobalServiceEvents: true
+        IsLogging: true
+        IsMultiRegionTrail: true
+        KMSKeyId: !GetAtt CloudTrailKmsKey.Arn
+        S3BucketName: !Ref LogsS3Bucket
