@@ -1,0 +1,50 @@
+---
+
+  #====================================================================================================
+  # AWS CloudFormation template for creating resources needed for Nessus scans.
+  #====================================================================================================
+
+  AWSTemplateFormatVersion: 2010-09-09
+  Description: Creates resources needed for Nessus scans.
+
+  #==================================================
+  # Resources
+  #==================================================
+  Resources:
+
+    NessusScanGroup:
+      Type: 'AWS::IAM::Group'
+      Properties:
+        ManagedPolicyArns:
+          - 'arn:aws:iam::aws:policy/SecurityAudit'
+        Path: /
+
+    NessusScanUser:
+      Type: 'AWS::IAM::User'
+      Properties:
+        Groups:
+          - !Ref NessusScanGroup
+
+    NessusScanUserAccessKey:
+      Type: 'AWS::IAM::AccessKey'
+      Properties:
+        Serial: 1
+        Status: Active
+        UserName: !Ref NessusScanUser
+
+  #==================================================
+  # Outputs
+  #==================================================
+  Outputs:
+
+    NessusScanUserAccessKeyId:
+      Description: Reference to the IAM access key ID.
+      Value: !Ref NessusScanUserAccessKey
+      Export:
+        Name: NessusScanUserAccessKeyId
+
+    NessusScanUserSecretAccessKey:
+      Description: Reference to the IAM access key secret access key.
+      Value: !GetAtt NessusScanUserAccessKey.SecretAccessKey
+      Export:
+        Name: NessusScanUserSecretAccessKey
