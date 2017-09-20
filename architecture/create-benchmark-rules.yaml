@@ -2055,7 +2055,7 @@
             eventName:
               - StopLogging
               - DeleteTrail
-              - Updatetrail
+              - UpdateTrail
         State: ENABLED
         Targets:
           -
